@@ -1,0 +1,13 @@
+[package]
+name = "plonky2-recursion-experiment"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+plonky2 = { git = "https://github.com/mir-protocol/plonky2" }
+sch = { git = "https://github.com/tideofwords/schnorr" }
+anyhow = "1.0.56"
+rand = "0.8.5"
+hashbrown = { version = "0.14.3", default-features = false, features = ["ahash", "serde"] }
+log = { version = "0.4.14", default-features = false }
+env_logger = "0.10.0"

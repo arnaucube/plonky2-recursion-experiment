@@ -3,6 +3,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 
+pub mod sig_gadget;
 pub mod tree_recursion;
 
 use plonky2::field::goldilocks_field::GoldilocksField;
@@ -11,4 +12,5 @@ use plonky2::plonk::proof::Proof;
 
 pub type F = GoldilocksField;
 pub type C = PoseidonGoldilocksConfig;
+pub const D: usize = 2;
 pub type PlonkyProof = Proof<F, PoseidonGoldilocksConfig, 2>;

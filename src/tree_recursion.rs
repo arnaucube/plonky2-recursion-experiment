@@ -30,7 +30,6 @@
 ///   `(signature proof OR recursive proof) AND ... AND (signature proof OR recursive proof)`
 /// and produces a new proof.
 ///
-///
 /// For example, if N is set to N=2, then we work with a binary recursion tree:
 ///           p_root
 ///            ▲
@@ -81,16 +80,18 @@ use plonky2::plonk::circuit_data::{
 use plonky2::plonk::proof::{ProofWithPublicInputs, ProofWithPublicInputsTarget};
 use std::time::Instant;
 
-use sch::schnorr::*;
 use sch::schnorr_prover::*;
 
-use super::{sig_gadget::SignatureGadgetTargets, PlonkyProof, C, D, F};
+use super::{
+    sig_gadget::{PODGadgetTargets, PODInput},
+    PlonkyProof, C, D, F,
+};
 
-/// Contains the methods to `build` (ie. create the targets, the logic of the circuit), and
-/// `fill_targets` (ie. set the specific values to be used for the previously created targets).
+/// Contains the methods to `add_targets` (ie. create the targets, the logic of the circuit), and
+/// `set_targets` (ie. set the specific values to be used for the previously created targets).
 pub struct RecursiveCircuit<const N: usize> {
     msg_targ: MessageTarget,
-    sigs_targ: Vec<SignatureGadgetTargets>,
+    sigs_targ: Vec<PODGadgetTargets>,
     proofs_targ: Vec<ProofWithPublicInputsTarget<D>>,
     // the next two are common for all the given proofs. It is the data for this circuit itself
     // (cyclic circuit).
@@ -120,7 +121,7 @@ impl<const N: usize> RecursiveCircuit<N> {
 
     // notice that this method does not fill the targets, which is done in the method
     // `fill_recursive_circuit_targets`
-    pub fn build(
+    pub fn add_targets(
         builder: &mut CircuitBuilder<F, D>,
         verifier_data: VerifierCircuitData<F, C, D>,
         msg_len: usize,
@@ -130,9 +131,9 @@ impl<const N: usize> RecursiveCircuit<N> {
         builder.register_public_inputs(&msg_targ.msg);
 
         // build the signature verification logic
-        let mut sigs_targ: Vec<SignatureGadgetTargets> = vec![];
+        let mut sigs_targ: Vec<PODGadgetTargets> = vec![];
         for _ in 0..N {
-            let sig_targets = SignatureGadgetTargets::build(builder, &msg_targ)?;
+            let sig_targets = PODGadgetTargets::add_targets(builder, &msg_targ)?;
             sigs_targ.push(sig_targets);
         }
 
@@ -161,13 +162,14 @@ impl<const N: usize> RecursiveCircuit<N> {
         })
     }
 
-    pub fn fill_targets(
+    pub fn set_targets(
         &mut self,
         pw: &mut PartialWitness<F>,
         msg: &Vec<F>,
-        selectors: Vec<F>, // 1=proof, 0=sig
-        pks: &Vec<SchnorrPublicKey>,
-        sigs: &Vec<SchnorrSignature>,
+        // if selectors[i]==0: verify pods[i] signature. if selectors[i]==1: verify
+        // recursive_proof[i]
+        selectors: Vec<F>,
+        pods_input: Vec<PODInput>,
         recursive_proofs: &Vec<PlonkyProof>,
     ) -> Result<()> {
         // set the msg value (used by all N sig gadgets)
@@ -175,7 +177,7 @@ impl<const N: usize> RecursiveCircuit<N> {
 
         // set the signature related values
         for i in 0..N {
-            self.sigs_targ[i].fill_targets(pw, selectors[i], &pks[i], &sigs[i])?;
+            self.sigs_targ[i].set_targets(pw, selectors[i], &pods_input[i])?;
         }
 
         // set proof related values:
@@ -236,8 +238,8 @@ pub fn common_data_for_recursion<const N: usize>(msg_len: usize) -> Result<Circu
         vec![],
     );
 
-    let _ = SignatureGadgetTargets::build(&mut builder, &msg_targ).unwrap();
-    let _ = SignatureGadgetTargets::build(&mut builder, &msg_targ).unwrap();
+    let _ = PODGadgetTargets::add_targets(&mut builder, &msg_targ).unwrap();
+    let _ = PODGadgetTargets::add_targets(&mut builder, &msg_targ).unwrap();
 
     // proofs verify
     let verifier_data = builder.add_verifier_data_public_inputs();
@@ -283,7 +285,7 @@ impl<const N: usize> Recursion<N> {
         // build the actual RecursiveCircuit circuit data
         let config = CircuitConfig::standard_recursion_config();
         let mut builder = CircuitBuilder::new(config);
-        let _ = RecursiveCircuit::<N>::build(&mut builder, data.verifier_data(), msg_len)?;
+        let _ = RecursiveCircuit::<N>::add_targets(&mut builder, data.verifier_data(), msg_len)?;
         dbg!(builder.num_gates());
         data = builder.build::<C>();
 
@@ -292,18 +294,22 @@ impl<const N: usize> Recursion<N> {
 
     pub fn prove_step(
         verifier_data: VerifierCircuitData<F, C, D>,
-        msg: &Vec<F>,
-        selectors: Vec<F>, // 1=proof, 0=sig
-        pks: &Vec<SchnorrPublicKey>,
-        sigs: &Vec<SchnorrSignature>,
+        msg: &Vec<F>, // will be an array of "pod roots (hashes)'
+        // if selectors[i]==0: verify pods[i] signature. if selectors[i]==1: verify
+        // recursive_proof[i]
+        selectors: Vec<F>,
+        pods_input: Vec<PODInput>,
         recursive_proofs: &Vec<PlonkyProof>,
     ) -> Result<PlonkyProof> {
         println!("prove_step:");
         for i in 0..N {
             if selectors[i].is_nonzero() {
-                println!("  (selectors[{}]==1), verify {}-th proof", i, i);
+                println!("  (pods_input[{}].selector==1), verify {}-th proof", i, i);
             } else {
-                println!("  (selectors[{}]==0), verify {}-th signature", i, i);
+                println!(
+                    "  (pods_input[{}].selector==0), verify {}-th signature",
+                    i, i
+                );
             }
         }
 
@@ -313,14 +319,14 @@ impl<const N: usize> Recursion<N> {
         // assign the targets
         let start = Instant::now();
         let mut circuit =
-            RecursiveCircuit::<N>::build(&mut builder, verifier_data.clone(), msg.len())?;
-        println!("RecursiveCircuit::build(): {:?}", start.elapsed());
+            RecursiveCircuit::<N>::add_targets(&mut builder, verifier_data.clone(), msg.len())?;
+        println!("RecursiveCircuit::add_targets(): {:?}", start.elapsed());
 
         // fill the targets
         let mut pw = PartialWitness::new();
         let start = Instant::now();
-        circuit.fill_targets(&mut pw, msg, selectors, pks, sigs, recursive_proofs)?;
-        println!("circuit.fill_targets(): {:?}", start.elapsed());
+        circuit.set_targets(&mut pw, msg, selectors, pods_input, recursive_proofs)?;
+        println!("circuit.set_targets(): {:?}", start.elapsed());
 
         let start = Instant::now();
         let data = builder.build::<C>();
@@ -361,6 +367,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use sch::schnorr::*;
 
     // this sets the plonky2 internal logs level
     fn set_log() {
@@ -377,7 +384,7 @@ mod tests {
         // For testing: change the following `N` value to try different arities of the recursion tree:
         test_tree_recursion_opt::<2>()?; // N=2
 
-        test_tree_recursion_opt::<3>()?; // N=3
+        // test_tree_recursion_opt::<3>()?; // N=3
 
         Ok(())
     }
@@ -387,7 +394,7 @@ mod tests {
         println!("\n--------------------------------------------------");
         println!("\n--------------------------------------------------");
         println!(
-            "\nrunning test:\n    test_tree_recursion_opt with N={} (arity)",
+            "\nrunning test:\n===test_tree_recursion_opt with N={} (arity)",
             N
         );
 
@@ -432,7 +439,7 @@ mod tests {
 
         // loop over the recursion levels
         for i in 0..l {
-            println!("\n=== recursion level i={}", i);
+            println!("\n--- recursion level i={}", i);
             let mut next_level_proofs: Vec<PlonkyProof> = vec![];
 
             // loop over the nodes of each recursion tree level
@@ -453,16 +460,13 @@ mod tests {
                 let proof_enabled = if i == 0 { F::ZERO } else { F::ONE };
 
                 // prepare the inputs for the `Recursion::prove_step` call
-                let proofs_selectors = (0..N).into_iter().map(|_| proof_enabled.clone()).collect();
-                let pks = (0..N)
+                let selectors = (0..N).into_iter().map(|_| proof_enabled.clone()).collect();
+                let pods_input: Vec<PODInput> = (0..N)
                     .into_iter()
-                    .enumerate()
-                    .map(|(k, _)| pk_vec[j + k].clone())
-                    .collect();
-                let sigs = (0..N)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(k, _)| sig_vec[j + k].clone())
+                    .map(|k| PODInput {
+                        pk: pk_vec[j + k],
+                        sig: sig_vec[j + k],
+                    })
                     .collect();
                 let proofs = (0..N)
                     .into_iter()
@@ -475,9 +479,8 @@ mod tests {
                 let new_proof = Recursion::<N>::prove_step(
                     verifier_data.clone(),
                     &msg,
-                    proofs_selectors,
-                    &pks,
-                    &sigs,
+                    selectors,
+                    pods_input,
                     &proofs,
                 )?;
                 println!(

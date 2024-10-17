@@ -28,23 +28,29 @@ fn binary_check(builder: &mut CircuitBuilder<F, D>, b: Target) {
     builder.connect(r, zero);
 }
 
+pub struct PODInput {
+    pub pk: SchnorrPublicKey,
+    pub sig: SchnorrSignature,
+}
+
 /// The logic of this gadget verifies the given signature if `selector==0`.
 /// We reuse this gadget for all the the signature verifications in the node of the recursion tree.
 ///
-/// Contains the methods to `build` (ie. create the targets, the logic of the circuit), and
-/// `fill_targets` (ie. set the specific values to be used for the previously created targets).
-pub struct SignatureGadgetTargets {
+/// Contains the methods to `add_targets` (ie. create the targets, the logic of the circuit), and
+/// `set_targets` (ie. set the specific values to be used for the previously created targets).
+pub struct PODGadgetTargets {
     pub selector_targ: Target,
     pub selector_booltarg: BoolTarget,
 
     pub pk_targ: SchnorrPublicKeyTarget,
     pub sig_targ: SchnorrSignatureTarget,
 }
-impl SignatureGadgetTargets {
-    pub fn build(
+
+impl PODGadgetTargets {
+    pub fn add_targets(
         mut builder: &mut CircuitBuilder<F, D>,
         msg_targ: &MessageTarget,
-    ) -> Result<SignatureGadgetTargets> {
+    ) -> Result<Self> {
         let selector_targ = builder.add_virtual_target();
         // ensure that selector_booltarg is \in {0,1}
         binary_check(builder, selector_targ);
@@ -80,18 +86,19 @@ impl SignatureGadgetTargets {
             sig_targ,
         })
     }
-    pub fn fill_targets(
+    pub fn set_targets(
         &mut self,
         pw: &mut PartialWitness<F>,
-        selector: F, // 1=proof, 0=sig
-        pk: &SchnorrPublicKey,
-        sig: &SchnorrSignature,
+        // if `selector` set to 0 will verify the given signature, if set to 1 won't (and the
+        // recursion layer will verify the respective plonky2 proof)
+        selector: F,
+        pod: &PODInput,
     ) -> Result<()> {
         pw.set_target(self.selector_targ, selector)?;
 
         // set signature related values:
-        self.pk_targ.set_witness(pw, &pk).unwrap();
-        self.sig_targ.set_witness(pw, &sig).unwrap();
+        self.pk_targ.set_witness(pw, &pod.pk).unwrap();
+        self.sig_targ.set_witness(pw, &pod.sig).unwrap();
 
         Ok(())
     }

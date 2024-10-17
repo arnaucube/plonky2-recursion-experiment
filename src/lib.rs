@@ -3,7 +3,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 
-pub mod sig_gadget;
+pub mod example_innercircuit;
 pub mod tree_recursion;
 
 use plonky2::field::goldilocks_field::GoldilocksField;
